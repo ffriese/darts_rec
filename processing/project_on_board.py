@@ -1,5 +1,10 @@
+import base64
+import io
+
 import numpy as np
 import math
+
+from imageio import imread
 
 from core.constants import RADIUS_INNER_BULL_MM, RADIUS_OUTER_BULL_MM, RADIUS_INNER_TRIPLE_MM, RADIUS_OUTER_TRIPLE_MM, \
     RADIUS_INNER_DOUBLE_MM, RADIUS_OUTER_DOUBLE_MM, RADIUS_BOARD_MM, FIELDS
@@ -22,6 +27,7 @@ class ProjectOnBoard(Module):
         self.sector_angle = 2 * math.pi / 20
         self.sector_degrees = 360/20
         self.impact_points_in = Input(data_type=ImpactPoints, config_keys=['cam_ids'])
+        self.dartboard_out = Output(data_type=CVImage)
         self.coordinate_out = Output(data_type=BoardCoordinate)
 
         self.background = None
@@ -41,9 +47,7 @@ class ProjectOnBoard(Module):
         }
 
     def draw_dartboard(self, background):
-
         for i in range(20):
-
             color = [COLOR_DARK, COLOR_LIGHT][i % 2]
             color_multi = [COLOR_DARK_MULTI, COLOR_LIGHT_MULTI][i % 2]
             # DOUBLES
@@ -148,8 +152,6 @@ class ProjectOnBoard(Module):
     def process_impact_points_in(self, impact_points):
 
         self.redraw_bg(impact_points.points[0])
-        ordinates_mm = {}
-        ordinates = {}
 
         lines = {}
 
@@ -158,7 +160,6 @@ class ProjectOnBoard(Module):
             cam_id = impact_point.camera_info['name']
 
             w = 1920
-
 
             # pixel-coordinates
             camera_center = w/2
@@ -174,7 +175,7 @@ class ProjectOnBoard(Module):
             impact_mm = impact_x * conversion_factor
 
             p_1 = (-cam_dist_board_center, bull_offset_mm) if cam_id == 0 else (bull_offset_mm, -cam_dist_board_center)
-            p_2 = (0, impact_mm) if cam_id == 0 else (impact_mm, 0)
+            p_2 = (0, impact_mm-bull_offset_mm) if cam_id == 0 else (impact_mm-bull_offset_mm, 0)
 
             lines[cam_id] = (p_1, p_2)
 
@@ -183,25 +184,9 @@ class ProjectOnBoard(Module):
                     (int((2*p_2[0]-p_1[0])+self.center), int((2*p_2[1]-p_1[1])+self.center)),
                     (1, 0, 0) if cam_id == 1 else (1, 1, 0), 1)
 
-
-            # ######## old
-            # dist_from_bull = float(impact_point.point[0]-impact_point.camera_info['bull']) / \
-            #                        float(impact_point.camera_info['radius'])
-            #
-            # ordinate_mm = (dist_from_bull * RADIUS_OUTER_DOUBLE_MM * self.direction_factors[cam_id]) + RADIUS_OUTER_DOUBLE_MM
-            # ordinates_mm[cam_id] = ordinate_mm
-            #
-            # dist_from_bull = int(dist_from_bull * RADIUS_OUTER_DOUBLE_MM * self.factor) * \
-            #                  self.direction_factors[cam_id]
-            #
-            # ordinate = self.center + dist_from_bull
-            # ordinates[cam_id] = ordinate
-            #
-            # p1 = (0, ordinate) if cam_id == 0 else (ordinate, 0)
-            # p2 = (self.center*2, ordinate) if cam_id == 0 else (ordinate, self.center*2)
-            #
-            # cv.line(self.background, p1, p2, (1, 0, 0) if cam_id == 1 else (1, 1, 0), 1)
-
+        if len(lines.keys()) < 2:
+            self.log_debug('NOT ENOUGH LINES!')
+            return
         intersection = self.line_intersection(lines[0], lines[1])
         board_coordinate = (int(intersection[0] + RADIUS_OUTER_DOUBLE_MM),
                             int(intersection[1] + RADIUS_OUTER_DOUBLE_MM))
@@ -210,16 +195,14 @@ class ProjectOnBoard(Module):
         cv.circle(self.background, display_coordinate, 4, (0.5, 0, 1), thickness=2)
         self.log_info('BOARD-COORDINATE:', board_coordinate)
         self.coordinate_out.data_ready(BoardCoordinate(board_coordinate))
-        self.log_debug('show')
-        Module.show_image(self.module_name, resize(self.background
-                                                   [
-                                                   int(self.center - self.factor * RADIUS_BOARD_MM * 1.2):
-                                                       int(self.center + self.factor * RADIUS_BOARD_MM * 1.2),
-                                                   int(self.center - self.factor * RADIUS_BOARD_MM * 1.2):
-                                                       int(self.center + self.factor * RADIUS_BOARD_MM * 1.2)
-                                                   ]
-                                                   , 1.5))
+        self.background.camera_info['topic'] = 'dartboard'
+        self.log_debug(self.background.shape, self.background.camera_info, self.background.id)
 
-
+        self.dartboard_out.data_ready(CVImage(np.uint8((np.array(self.background[
+                                                    int(self.center - self.factor * RADIUS_BOARD_MM * 1.2):
+                                                        int(self.center + self.factor * RADIUS_BOARD_MM * 1.2),
+                                                    int(self.center - self.factor * RADIUS_BOARD_MM * 1.2):
+                                                        int(self.center + self.factor * RADIUS_BOARD_MM * 1.2)
+                                                    ]))*255/2.), '0000', {'name': 0, 'topic': 'dartboard'}))
 
 

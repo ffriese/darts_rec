@@ -8,14 +8,13 @@ import traceback
 
 import numpy as np
 
-sys.path.remove('/opt/ros/kinetic/lib/python2.7/dist-packages')
+#sys.path.remove('/opt/ros/kinetic/lib/python2.7/dist-packages')
 import cv2 as cv
 from collections import deque
 from copy import deepcopy
 from threading import Thread, Lock
 from typing import List, Iterable, Type
 
-from pylsl import local_clock
 from termcolor import colored
 
 from core.datatypes import RecognitionDataType, CVImage
@@ -38,6 +37,7 @@ class Module(PropertyObject, Loggable, metaclass=ModuleMeta):
     enable_core_module_log = True
     __INTERRUPT_FLAG__ = False
 
+    __ENABLE_IM_SHOWS__ = True
     __IM_SHOWS = dict()
     __im_show_lock__ = Lock()
 
@@ -136,7 +136,6 @@ class Module(PropertyObject, Loggable, metaclass=ModuleMeta):
         while input_node.is_working():
             result, timing = input_node.process_item()
             if not result:
-                # cv.waitKey(int(input_node.sleep_time*1000))
                 time.sleep(input_node.sleep_time)
             else:
                 self._publish_timing(timing, input_node)
@@ -259,6 +258,9 @@ class Module(PropertyObject, Loggable, metaclass=ModuleMeta):
     def __stop__(self):
         pass
 
+    def __custom_pre_start__(self):
+        pass
+
     def __custom_cleanup__(self):
         pass
 
@@ -281,6 +283,9 @@ class Module(PropertyObject, Loggable, metaclass=ModuleMeta):
                 m.__custom_connect__()
 
         Module.__core_log__('... starting up Modules ...', 'green')
+
+        for m in instances:
+            m.__custom_pre_start__()
 
         for m in instances:
             upper = lower = '─' * (11 + len(m.module_name))
@@ -341,17 +346,21 @@ class Module(PropertyObject, Loggable, metaclass=ModuleMeta):
                 return not exit_condition()
         try:
             while condition() and not Module.__INTERRUPT_FLAG__:
-                with Module.__im_show_lock__:
-                    for frame in Module.__IM_SHOWS.keys():
-                        if not [1 for cam in [c for c in Module.__IM_SHOWS[frame] if c != 'axis'] if not Module.__IM_SHOWS[frame][cam]]:
-                            ims = []
-                            for cam in [c for c in Module.__IM_SHOWS[frame] if c != 'axis']:
-                                ims.append(Module.__IM_SHOWS[frame][cam].popleft())
-                            try:
-                                cv.imshow(frame, np.concatenate(ims, axis=Module.__IM_SHOWS[frame]['axis']))
-                            except ValueError:
-                                print(frame, [im.shape for im in ims])
-                cv.waitKey(1)
+                if Module.__ENABLE_IM_SHOWS__:
+                    with Module.__im_show_lock__:
+                        for frame in Module.__IM_SHOWS.keys():
+                            if not [1 for cam in [c for c in Module.__IM_SHOWS[frame] if c != 'axis'] if not Module.__IM_SHOWS[frame][cam]]:
+                                ims = []
+                                for cam in [c for c in Module.__IM_SHOWS[frame] if c != 'axis']:
+                                    ims.append(Module.__IM_SHOWS[frame][cam].popleft())
+                                try:
+                                    cv.imshow(frame, np.concatenate(ims, axis=Module.__IM_SHOWS[frame]['axis']))
+                                except ValueError as e:
+                                    print(e, frame, [im.shape for im in ims])
+                    cv.waitKey(50)
+                    time.sleep(0.05)
+                else:
+                    time.sleep(0.1)
         except KeyboardInterrupt:
             pass
         try:
@@ -492,7 +501,7 @@ class Output(ConnectionNode):
         #     self.module.log_debug(self.name+' -> '+','.join([c.module.module_name+'.'+c.name for c in
         #                                                      self._registered_connections]))
         for connection in self._registered_connections:
-            connection.add_to_data_queue(deepcopy(data))
+            connection.add_to_data_queue(deepcopy(data), self.module)
 
     def relay(self, output: 'Output'):
         self._relay_connections.append(output)
@@ -501,9 +510,10 @@ class Output(ConnectionNode):
 
 
 class Input(ConnectionNode):
-    def __init__(self, data_type: Type[RecognitionDataType], config_keys: List[str] = None):
+    def __init__(self, data_type: Type[RecognitionDataType], config_keys: List[str] = None, num_worker_threads: int=1):
         super().__init__(data_type, config_keys)
-        self._worker_thread = None
+        self.num_worker_threads = num_worker_threads
+        self._worker_threads = []
         self._data_queue = deque()
         self._working = True
         self.sleep_time = 0.005
@@ -525,17 +535,20 @@ class Input(ConnectionNode):
     def is_working(self):
         return self._working
 
-    def add_to_data_queue(self, item: RecognitionDataType):
+    def add_to_data_queue(self, item: RecognitionDataType, source: Module):
+        item.source = source
         self._data_queue.append(item)
 
-    def extend_data_queue(self, item_list: Iterable[RecognitionDataType]):
+    def extend_data_queue(self, item_list: Iterable[RecognitionDataType], source: Module):
+        for item in item_list:
+            item.source = source
         self._data_queue.extend(item_list)
 
     def get_queue_size(self):
         return len(self._data_queue)
 
     def process_item(self):
-        start_time = local_clock()
+        start_time = time.time()
         if self._data_queue:
             next_job = self._data_queue.popleft()
             if type(next_job) != self.data_type:
@@ -548,29 +561,33 @@ class Input(ConnectionNode):
                 self.module.log_error('MODULE STOPPED WITH EXCEPTION:', type(e), e, "\n SHUTTING DOWN!")
                 self.module.log_error('EXCEPTION INFO:', traceback.format_exc())
                 os.kill(os.getpid(), signal.SIGINT)
-            proc_time = local_clock() - start_time
+            proc_time = time.time() - start_time
             return True, proc_time
         else:
-            proc_time = local_clock() - start_time
+            proc_time = time.time() - start_time
             return False, proc_time
 
     def _activate_thread(self):
         # re-new old threads
-        if not self._working or self._worker_thread is None:
+        if not self._working or not self._worker_threads:
             self._working = True
-            self._worker_thread = Thread(target=self.module.input_worker_loop, args=[self])
-            self._worker_thread.daemon = True
-        self._worker_thread.start()
+            for i in range(self.num_worker_threads):
+                worker_thread = Thread(target=self.module.input_worker_loop, args=[self])
+                worker_thread.daemon = True
+                self._worker_threads.append(worker_thread)
+        for worker_thread in self._worker_threads:
+            worker_thread.start()
 
     def _deactivate_thread(self):
         self._working = False
 
     def _join_thread(self):
-        if self._worker_thread.isAlive():
-            self._worker_thread.join()
-        else:
-            self.module.log(colored('"%s"-worker was not running' % self.name, 'white', attrs=['bold']), level=None,
-                            simple_time_format=True)
+        for worker_thread in self._worker_threads:
+            if worker_thread.isAlive():
+                worker_thread.join()
+            else:
+                self.module.log(colored('"%s"-worker was not running' % self.name, 'white', attrs=['bold']), level=None,
+                                simple_time_format=True)
 
     def is_configured(self):
         for key in self.config_keys:

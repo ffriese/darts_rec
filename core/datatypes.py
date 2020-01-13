@@ -4,8 +4,16 @@ from typing import List, Tuple
 import numpy as np
 
 
+class AbstractRecognitionDataType(type):
+    def __call__(cls, *args, **kwargs):
+        obj = type.__call__(cls, *args, **kwargs)
+        obj.source = None
+        return obj
+
+
 class RecognitionDataType(object):
-    pass
+    __metaclass__ = AbstractRecognitionDataType
+    source = None
 
 
 class CVImage(np.ndarray, RecognitionDataType):
@@ -28,8 +36,20 @@ class CVImage(np.ndarray, RecognitionDataType):
         self.id = getattr(obj, 'id', None)
         self.camera_info = getattr(obj, 'camera_info', None)
 
+    def cam_id(self):
+        return self.camera_info['name']
+
     def __str__(self):
         return 'CVImage[%s, %r, %r]' % (getattr(self, 'id', None), getattr(self, 'camera_info', None), self.shape)
+
+
+class MultiImage(RecognitionDataType):
+    def __init__(self, images: List[CVImage], processing_trigger=False):
+        self.images = images
+        self.has_processing_trigger = processing_trigger
+
+    def __len__(self):
+        return len(self.images)
 
 
 class Contours(RecognitionDataType):
@@ -56,6 +76,12 @@ class ImpactPoints(RecognitionDataType):
         self.points = points
 
 
+class JsonObject(RecognitionDataType):
+    def __init__(self, json, topic):
+        self.json = json
+        self.topic = topic
+
+
 class SetBackgroundTrigger(RecognitionDataType):
     def __init__(self, dart_number: int):
         self.dart_number = dart_number
@@ -64,3 +90,8 @@ class SetBackgroundTrigger(RecognitionDataType):
 class BoardCoordinate(RecognitionDataType):
     def __init__(self, point):
         self.point = point
+
+
+class CollectionTrigger(RecognitionDataType):
+    def __init__(self, processing_trigger=False):
+        self.is_processing_trigger = processing_trigger
