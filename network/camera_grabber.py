@@ -11,7 +11,7 @@ from pyv4l2.control import Control
 
 from core.helper import ModuleParameter
 from core.module import Module, Output, Thread, time, Input
-from core.datatypes import CVImage, MultiImage, CollectionTrigger
+from core.datatypes import CVImage, MultiImage, CollectionTrigger, JsonObject
 
 CTRL_BACK_LIGHT_COMPENSATION = 9963804
 CTRL_AUTO_WHITE_BALANCE = 9963788
@@ -31,6 +31,7 @@ class CameraGrabber(Module):
         super().__init__()
 
         self.images_out = Output(data_type=MultiImage, config_keys=['cam_ids'])
+        self.frame_rate_out = Output(data_type=JsonObject)
 
         self.event_collection_thread = Thread(target=self.event_loop)
         self.event_collection_thread.setDaemon(True)
@@ -39,7 +40,7 @@ class CameraGrabber(Module):
         self.resolution = (1920, 1080)
         self.running = False
 
-        self.cam_ids = ModuleParameter(None, data_type=list)
+        self.cam_ids = ModuleParameter(None, data_type=list, required=True)
         self.event_camera = ModuleParameter(1)
         self.cameras = OrderedDict()  # type: OrderedDict[int, Camera]
 
@@ -92,6 +93,10 @@ class CameraGrabber(Module):
 
     def event_loop(self):
         frame_count = 0
+        total_sleep = [0 for _ in self.cameras]
+        max_sleep = 0
+        for camera in self.cameras.values():
+            camera.request_frame(blocking=False)
         start_ts = time.time()
         collection_sleep = 1.0/float(list(self.cameras.values())[0].frame_rate)
         while self.running:
@@ -100,12 +105,16 @@ class CameraGrabber(Module):
             frame_count += 1
             frame_id = str(uuid.uuid4())
             for camera in self.cameras.values():
-                camera.request_frame(blocking=False)
-            for camera in self.cameras.values():
+                retrieval_start = time.time()
                 while not camera.buffer:
                     time.sleep(0.001)
+                single_sleep = time.time()-retrieval_start
+                total_sleep[camera.cam_id] += single_sleep
+                max_sleep = max(max_sleep, single_sleep)
                 frame = camera.buffer.popleft()
                 images.append(CVImage(frame, frame_id, {'name': camera.cam_id, 'ts': ts}))
+            for camera in self.cameras.values():
+                camera.request_frame(blocking=False)
             # event_image = images[0]
             self.collected_images.append(MultiImage(images))
             # self.event_image_out.data_ready(event_image)
@@ -113,9 +122,16 @@ class CameraGrabber(Module):
 
             done_ts = time.time()
             if done_ts > (start_ts + 1):
-                self.log_debug('Framerate: %r' % (frame_count / (done_ts-start_ts)))
+                frame_rate = round(float(frame_count) / (done_ts-start_ts), 1)
+                mean_sleep = [round(float(t_s) / float(frame_count), 4) for t_s in total_sleep]
+                cam_ret = [round(np.mean(c.retrieval_times), 4) for c in self.cameras.values()]
+                self.log_debug('Framerate: %r' % frame_rate)
+                self.frame_rate_out.data_ready(
+                    JsonObject('{"fr":"%s", "s": "%s", "r":"%s"}' %
+                               (frame_rate, mean_sleep, cam_ret), 'frame_rate'))
                 start_ts = done_ts
                 frame_count = 0
+                total_sleep = [0 for _ in self.cameras]
 
             elapsed = time.time() - ts
             if elapsed < collection_sleep:
@@ -182,6 +198,7 @@ class Camera(object):
         # self.print_config()
         self.retrieval_jobs = deque()
         self.buffer = deque(maxlen=5)
+        self.retrieval_times = deque(maxlen=10)
         self.running = True
         self.grabbing_paused = False
         self.grabber_thread = Thread(target=self.continuous_grab)
@@ -198,9 +215,12 @@ class Camera(object):
     def continuous_grab(self):
         while self.running:
             if self.retrieval_jobs:
-                self.retrieval_jobs.popleft()
+                retrieval_start = time.time()
                 ret, frame = self.capture.retrieve()
+                retrieval_time = time.time()-retrieval_start
+                self.retrieval_times.append(retrieval_time)
                 self.buffer.append(frame)
+                self.retrieval_jobs.popleft()
             elif not self.grabbing_paused:
                 self.capture.grab()
             time.sleep(0.000001)

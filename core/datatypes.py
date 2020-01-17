@@ -1,5 +1,6 @@
+import json
 import uuid
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any, Union
 
 import numpy as np
 
@@ -44,7 +45,7 @@ class CVImage(np.ndarray, RecognitionDataType):
 
 
 class MultiImage(RecognitionDataType):
-    def __init__(self, images: List[CVImage], processing_trigger=False):
+    def __init__(self, images: List[CVImage], processing_trigger: bool = False):
         self.images = images
         self.has_processing_trigger = processing_trigger
 
@@ -53,7 +54,7 @@ class MultiImage(RecognitionDataType):
 
 
 class Contours(RecognitionDataType):
-    def __init__(self, contours, image_id, camera_info):
+    def __init__(self, contours, image_id: str, camera_info: Dict[str, Any]):
         self.image_id = image_id
         self.contours = contours
         self.camera_info = camera_info
@@ -77,9 +78,15 @@ class ImpactPoints(RecognitionDataType):
 
 
 class JsonObject(RecognitionDataType):
-    def __init__(self, json, topic):
-        self.json = json
+    def __init__(self, json_obj: Union[str, dict], topic: str):
+        self._json_dict = json.loads(json_obj) if isinstance(json_obj, str) else json_obj
         self.topic = topic
+
+    def get_string(self):
+        return json.dumps(self._json_dict)
+
+    def get_dict(self):
+        return self._json_dict
 
 
 class SetBackgroundTrigger(RecognitionDataType):
@@ -88,10 +95,10 @@ class SetBackgroundTrigger(RecognitionDataType):
 
 
 class BoardCoordinate(RecognitionDataType):
-    def __init__(self, point):
+    def __init__(self, point: Tuple[float, float]):
         self.point = point
 
 
 class CollectionTrigger(RecognitionDataType):
-    def __init__(self, processing_trigger=False):
+    def __init__(self, processing_trigger: bool = False):
         self.is_processing_trigger = processing_trigger

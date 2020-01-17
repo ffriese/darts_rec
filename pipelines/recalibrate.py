@@ -1,30 +1,24 @@
 from core.experiment import Experiment
-from network.file_grabber import FileGrabber
-from network.ros_coordinate_sender import ROSCoordinateSender
-from network.ros_grabber import ROSGrabber
-from processing.background_subtraction import BackgroundSubtraction
-from processing.calibrator import Calibrator
-from processing.clean_difference import CleanDifference
-from processing.edge_detection import EdgeDetection
-from processing.fit_line import FitLine
-from processing.project_on_board import ProjectOnBoard
-from processing.state_machine import StateMachine
-from processing.warper import Warper
+from network.camera_grabber import CameraGrabber
+from network.mqtt_client import MQTTClient, CalibrationMode
+from processing.metadatawriter import MetaDataWriter
 
 
 class Recalibrate(Experiment):
     def __init__(self):
         super().__init__()
-        #self.grabber = FileGrabber()
-        self.grabber = ROSGrabber()
-        self.calibrator = Calibrator()
-        #self.calibrator = Warper()
+        self.grabber = CameraGrabber()
+        self.calibrator = MetaDataWriter()
+        self.client = MQTTClient()
 
     def connect(self):
-        self.grabber.image_out.connect(self.calibrator.raw_image_in)
+        self.grabber.images_out.connect(self.calibrator.raw_images_in)
+        self.calibrator.calibrated_images_out.connect(self.client.multi_image_in)
+        self.client.calibration_config_out.connect(self.calibrator.config_in)
 
     def configure(self):
-        pass
+        self.grabber.configure(cam_ids=[0, 1])
+        self.client.configure(calibration_mode=CalibrationMode.HEADLESS_SERVER)
 
 
 if __name__ == '__main__':

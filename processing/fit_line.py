@@ -76,8 +76,7 @@ class FitLine(Module):
                 cv.circle(raw_image, board_intersect(line, board_y), 7, (255, 255, 0))
                 cv.rectangle(raw_image, tuple(roi[:2]), (roi[0]+roi[2], roi[1]+roi[3]), (0,0,255))
                 impact_points.append(ImpactPoint(board_intersect(line, board_y), contours.image_id, contours.camera_info))
-            images.append(CVImage(raw_image, contours.image_id, {'name': contours.camera_info['name'],
-                                                                 'topic': 'fit_line'}))
+            images.append(CVImage(raw_image, contours.image_id, contours.camera_info))
 
             # for raw_image in images:
             #     Module.show_image(self.module_name, resize(raw_image, 0.5))

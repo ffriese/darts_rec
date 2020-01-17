@@ -3,32 +3,25 @@ from copy import deepcopy
 from threading import Lock
 
 import numpy as np
-import pickle
 
 from termcolor import colored
 
-from core.helper import ModuleParameter, create_trackbar
+from core.helper import ModuleParameter
 from core.module import Module, Input, Output
-from core.datatypes import CVImage, SetBackgroundTrigger, CollectionTrigger, MultiImage
-from core.convenience import resize
+from core.datatypes import CVImage, SetBackgroundTrigger, MultiImage
 import cv2 as cv
 
 
 class BackgroundSubtraction(Module):
 
-    #new = cv.BackgroundSubtractor
-    new = cv.createBackgroundSubtractorMOG2
+    create_new = cv.createBackgroundSubtractorMOG2
 
     def __init__(self):
         super().__init__()
-        # self.event_image_in = Input(data_type=CVImage, num_worker_threads=1)
         self.images_in = Input(data_type=MultiImage, config_keys=['cam_ids'], num_worker_threads=1)
-        # self.synced_images_in = Input(data_type=MultiImage, config_keys=['cam_ids'], num_worker_threads=1)
         self.rois_in = Input(data_type=MultiImage, config_keys=['cam_ids'], num_worker_threads=3)
         self.set_background_trigger_in = Input(data_type=SetBackgroundTrigger)
-        # self.foreground_out = Output(data_type=CVImage, config_keys=['cam_ids'])
         self.synced_foregrounds_out = Output(data_type=MultiImage, config_keys=['cam_ids'])
-        # self.collection_trigger_out = Output(data_type=CollectionTrigger)
 
         self.background_subtractor = None
         self.temp_subtractor = None
@@ -41,14 +34,17 @@ class BackgroundSubtraction(Module):
         self.sub_lock = Lock()
         self.initial_images = None
 
-        self.roi = [50, 350, 1850, 130]
         self.thresh_low = 2000
         self.thresh_high = 20000
+        self.thresh_too_high = 150000
 
         self.cam_ids = ModuleParameter(None, data_type=list)
         self.enable_debug_images = ModuleParameter(False)
+        self.min_amount_of_initial_images = ModuleParameter(5)
 
-    def configure(self, enable_debug_images: bool = None):
+    def configure(self,
+                  enable_debug_images: bool = None,
+                  min_amount_of_initial_images: int = None):
         self._configure(locals())
 
     def re_init_subtractors(self):
@@ -58,7 +54,7 @@ class BackgroundSubtraction(Module):
         for c in self.cam_ids:
             cam_ids.append('EVENT_%s' % c)
 
-        subs = {c: BackgroundSubtraction.new(detectShadows=False) for c in cam_ids}
+        subs = {c: BackgroundSubtraction.create_new(detectShadows=False) for c in cam_ids}
         self.initial_images = {c: 0 for c in cam_ids}
         return subs
 
@@ -93,37 +89,17 @@ class BackgroundSubtraction(Module):
         self.get_bg_sub()[background.camera_info['name']].apply(background, learningRate=0.5)
         Module.show_image("BG %s" % background.cam_id(), background)
 
-    # def process_synced_images_in(self, images: MultiImage):
-    #     if images.has_processing_trigger:
-    #         foregrounds = []
-    #         for image in images.images:
-    #             im = image[int(self.roi[1]):int(self.roi[1] + self.roi[3]),
-    #                  int(self.roi[0]):int(self.roi[0] + self.roi[2])]
-    #             self.log_debug('getting bg-sub for cam', image.cam_id(), 'with',
-    #                            self.initial_images[image.cam_id()], 'initial images')
-    #             foreground = CVImage(self.get_bg_sub()[image.camera_info['name']].apply(im, learningRate=0),
-    #                                  image.id, image.camera_info)
-    #             foreground.camera_info['roi'] = self.roi
-    #             foregrounds.append(foreground)
-    #         with self.sync_sub_lock:
-    #             self.synced_sub_in_progress = False
-    #         self.synced_foregrounds_out.data_ready(MultiImage(foregrounds))
-    #     else:
-    #         for image in images.images:
-    #             im = image[int(self.roi[1]):int(self.roi[1] + self.roi[3]),
-    #                  int(self.roi[0]):int(self.roi[0] + self.roi[2])]
-    #             self.add_background(im)
-    #         # self.synced_foregrounds_out.data_ready(images)
-
     def process_rois_in(self, rois: MultiImage):
         foregrounds = []
         for image in rois.images:
+            roi = image.camera_info['suggested_roi']
             self.log_debug('getting bg-sub for cam', image.cam_id(), 'with',
                            self.initial_images[image.cam_id()], 'initial images')
             foreground = CVImage(self.get_bg_sub()[image.cam_id()].apply(image, learningRate=0),
                                  image.id, image.camera_info)
 
-            foreground.camera_info['roi'] = self.roi
+            foreground.camera_info['roi'] = roi
+            foreground.camera_info.pop('suggested_roi')
             foregrounds.append(foreground)
         with self.sub_lock:
             self.synced_sub_in_progress = False
@@ -142,25 +118,23 @@ class BackgroundSubtraction(Module):
         for image in images.images:
             cam_id = image.cam_id()
             image_collection[image.cam_id()] = {}
-            roi_image = image[int(self.roi[1]):int(self.roi[1] + self.roi[3]), int(self.roi[0]):int(self.roi[0] + self.roi[2])]
+            roi = image.camera_info['suggested_roi']
+            roi_image = image[int(roi[1]):int(roi[1] + roi[3]), int(roi[0]):int(roi[0] + roi[2])]
             image_collection[image.cam_id()]['roi'] = roi_image
-            scaled_image = cv.resize(roi_image, dsize=(int(self.roi[2] / 4), int(self.roi[3] / 4)),
+            scaled_image = cv.resize(roi_image, dsize=(int(roi[2] / 4), int(roi[3] / 4)),
                                      interpolation=cv.INTER_NEAREST)
 
             scaled_image = CVImage(scaled_image, image.id, deepcopy(image.camera_info))
             scaled_image.camera_info['name'] = 'EVENT_%s' % cam_id
             image_collection[image.cam_id()]['scaled'] = scaled_image
 
-            if self.initial_images[scaled_image.cam_id()] < 2:
+            if self.initial_images[scaled_image.cam_id()] < self.min_amount_of_initial_images:
                 self.add_background(scaled_image)
                 self.add_background(CVImage(roi_image, image.id, image.camera_info))
                 do_return = True
                 continue
 
-            # self.log_debug('GETTING DIFF FOR %s WITH %s initial images' %
-            #                (scaled_image.cam_id(), self.initial_images[scaled_image.cam_id()]))
             # start event-detection
-
             small = CVImage(self.get_bg_sub()[scaled_image.cam_id()].apply(scaled_image, learningRate=0),
                                  image.id, image.camera_info)
             small_fg = cv.bilateralFilter(small, 5, 57, 57)
@@ -176,89 +150,27 @@ class BackgroundSubtraction(Module):
         if do_return:
             return
 
-        m_diff = max(diffs)
+        max_diff = max(diffs)
+        min_diff = min(diffs)
+        if max_diff > 0:
+            self.log_debug('diff:', diffs, max_diff, 'queue-size:', self.images_in.get_queue_size(),
+                           'INITIAL IMS:', self.initial_images)
 
-        self.log_debug('diff:', diffs, m_diff, 'queue-size:', self.images_in.get_queue_size(),
-                       'INITIAL IMS:', self.initial_images)
-
-        if self.thresh_low < m_diff < self.thresh_high:
+        if self.thresh_low < max_diff < self.thresh_high:
             for collection in image_collection.values():
                 self.add_background(collection['scaled'])
                 self.add_background(collection['roi'])
-        if m_diff > self.thresh_high:
-            self.log_debug(colored('OVER THRESHOLD!', 'cyan'))
+
+        # this probably won't work nicely until we have 3 cameras
+        if max_diff > self.thresh_high and min_diff > (self.thresh_low * 2):
+            self.log_debug(colored('OVER THRESHOLD! %r' % diffs, 'cyan'))
+            if min(self.initial_images.values()) < self.min_amount_of_initial_images:
+                self.log_debug('too few images..... ignoring')
+                return
             with self.sub_lock:
                 self.synced_sub_in_progress = True
             self.set_background_trigger_in.add_to_data_queue(SetBackgroundTrigger(1), self)
             self.rois_in.add_to_data_queue(MultiImage([c['roi'] for c in image_collection.values()]), self)
-#
-#     def process_event_image_in(self, image: CVImage):
-#         if self.synced_sub_in_progress:
-#             return
-#         # _image__2 = CVImage(image, image.id, image.camera_info).copy()
-#         im = image[int(self.roi[1]):int(self.roi[1] + self.roi[3]), int(self.roi[0]):int(self.roi[0] + self.roi[2])]
-#         im = cv.resize(im, dsize=(int(self.roi[2]/4), int(self.roi[3]/4)), interpolation=cv.INTER_NEAREST)
-#
-#         im = CVImage(im, image.id, deepcopy(image.camera_info))
-#         im.camera_info['name'] = 'EVENT'
-#         Module.show_image('event', im)
-#         if self.initial_images is None:
-#             self.log_debug('initial images none')
-#             self.get_bg_sub()
-#         if self.initial_images['EVENT'] < 2:
-#             self.latest_safe_event_bg = time.time()+0.5
-#             self.collection_trigger_out.data_ready(CollectionTrigger(processing_trigger=False))
-#             self.add_background(im)
-#             return
-#         start = time.time()
-#         foreground = CVImage(self.get_bg_sub()['EVENT'].apply(im, learningRate=0),
-#                                  image.id, image.camera_info)
-#
-#         small = foreground
-# #        small_fg = cv.bilateralFilter(small, 11, 57, 57)
-#         small_fg = cv.bilateralFilter(small, 5, 57, 57)
-#
-#         kernel = np.ones((2, 2), np.uint8)
-#         small_fg = cv.morphologyEx(small_fg, cv.MORPH_OPEN, kernel)
-#         small_fg = cv.morphologyEx(small_fg, cv.MORPH_CLOSE, kernel)
-#         small_fg = cv.threshold(small_fg, 5, 255, cv.THRESH_BINARY)[1]
-#         # self.log_debug('BG_SUB took: %f' % (time.time()-start))
-#         diff = np.sum(small_fg)
-#
-#         self.log_debug('diff:', diff, 'queue-size:', len(self.event_image_in._data_queue),
-#                        'INITIAL IMS:',  self.initial_images['EVENT'])
-#
-#         if self.thresh_low < diff < self.thresh_high:
-#             self.add_background(im)
-#             self.latest_safe_event_bg = image.camera_info['ts']
-#             self.collection_trigger_out.data_ready(CollectionTrigger(processing_trigger=False))
-#         if diff > self.thresh_high:
-#             # TEMPORARY!!!!
-#             self.collection_trigger_out.data_ready(CollectionTrigger(processing_trigger=True))
-#             self.log_debug(colored('OVER THRESHOLD!', 'cyan'))
-#             self.foreground_out.data_ready(CVImage(im, image.id, image.camera_info))
-#             with self.sync_sub_lock:
-#                 self.synced_sub_in_progress = True
-#             self.set_background_trigger_in.add_to_data_queue(SetBackgroundTrigger(1))
-#
-#         # Module.show_image(self.module_name, CVImage(small_fg, image.id, image.camera_info))
-#
-#         # Module.show_image("Input", resize(_image__2, 0.4))
-#         # if self.enable_debug_images:
-#         #     Module.show_image(self.module_name, f, 0.4))
 
-    # def __start__(self):
-    #     try:
-    #         # data = np.load('BACKGROUNDS.npy')
-    #         with open('BACKGROUNDS', 'rb') as bg_file:
-    #             data = pickle.load(bg_file)
-    #             for f in data:
-    #                 image = f['image']
-    #                 image.id = f['id']
-    #                 image.camera_info = f['camera_info']
-    #                 self.add_background(image)
-    #                 pass
-    #     except FileNotFoundError as e:
-    #         print(e)
 
 
