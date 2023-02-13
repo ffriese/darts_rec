@@ -1,10 +1,10 @@
-from core.experiment import Experiment
+from core.pipeline import Pipeline
 from network.camera_grabber import CameraGrabber
 from network.mqtt_client import MQTTClient, CalibrationMode
 from processing.metadatawriter import MetaDataWriter
 
 
-class Recalibrate(Experiment):
+class Recalibrate(Pipeline):
     def __init__(self):
         super().__init__()
         self.grabber = CameraGrabber()

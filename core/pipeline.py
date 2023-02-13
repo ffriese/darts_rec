@@ -30,7 +30,7 @@ class Parameter:
         return self.value
 
 
-class ExperimentMeta(type):
+class PipelineMeta(type):
     # noinspection PyProtectedMember
     def __call__(cls, *args, **kwargs):
         instance = super().__call__(*args, **kwargs)
@@ -38,7 +38,7 @@ class ExperimentMeta(type):
         return instance
 
 
-class Experiment(Loggable, metaclass=ExperimentMeta):
+class Pipeline(Loggable, metaclass=PipelineMeta):
 
     IM_SHOWS = dict()
 
@@ -51,7 +51,7 @@ class Experiment(Loggable, metaclass=ExperimentMeta):
 
     def log(self, msg, *args, level=logging.INFO, simple_time_format=False):
         Loggable._log(msg, *args, level=level,
-                      module_name=colored('Experiment: %s' % self.__class__.__name__, 'green'),
+                      module_name=colored('Pipeline: %s' % self.__class__.__name__, 'green'),
                       module_log_level=None, simple_time_format=simple_time_format)
 
     def _update_modules(self):
@@ -73,7 +73,7 @@ class Experiment(Loggable, metaclass=ExperimentMeta):
 
     def configure(self):
         """
-            Configure the Modules used in this Experiment
+            Configure the Modules used in this Pipeline
         """
         raise NotImplementedError("Please implement this method in subclass")
 

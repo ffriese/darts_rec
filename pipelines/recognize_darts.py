@@ -1,6 +1,6 @@
 import platform
 
-from core.experiment import Experiment
+from core.pipeline import Pipeline
 from core.module import Module
 from network.camera_grabber import CameraGrabber
 from network.mqtt_client import MQTTClient
@@ -12,7 +12,7 @@ from processing.fit_line import FitLine
 from processing.project_on_board import ProjectOnBoard
 
 
-class RecognizeDarts(Experiment):
+class RecognizeDarts(Pipeline):
     def __init__(self):
         Module.__ENABLE_IM_SHOWS__ = platform.uname()[1] == 'iceberg'
         super().__init__()

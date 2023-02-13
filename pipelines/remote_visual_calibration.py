@@ -1,9 +1,9 @@
-from core.experiment import Experiment
+from core.pipeline import Pipeline
 from network.mqtt_client import MQTTClient, CalibrationMode
 from processing.visual_calibration import VisualCalibration
 
 
-class RemoteVisualCalibration(Experiment):
+class RemoteVisualCalibration(Pipeline):
     def __init__(self):
         super().__init__()
         self.client = MQTTClient()
